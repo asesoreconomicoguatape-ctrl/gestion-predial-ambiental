@@ -17,19 +17,20 @@ export function useMapOrchestrator(mapContainer, filtersGetter) {
   const { visibleCallouts, buildCallouts, updateCalloutPositions, refreshVisibleCallouts }
     = useCallouts(() => _map)
 
-  const { loading, loadError, fromCache, hoverLabel, viaHoverLabel, selectedVia, selectedMpio, cachedMunicipios, cachedVias, cachedLocalizaciones, loadSimeva }
+  const { loading, loadError, fromCache, hoverLabel, viaHoverLabel, selectedVia, selectedMpio, cachedMunicipios, cachedVias, cachedLocalizaciones, cachedAreaIntervenidas, cachedPrediosIntervenidos, loadSimeva }
     = useMapLayers(
         () => _map,
         {
-          onOptionsLoaded: (opts)  => store.setFilterOptions(opts),
-          onStatsLoaded:   (stats) => { store.setMapStats(stats); store.setMapLoading(false) },
+          onOptionsLoaded: (opts)    => store.setFilterOptions(opts),
+          onCatalogLoaded: (catalog) => store.setProjectCatalog(catalog),
+          onStatsLoaded:   (stats)   => { store.setMapStats(stats); store.setMapLoading(false) },
         },
         { buildCallouts, updateCalloutPositions },
       )
 
   const { selectedSubregion, selectedMunicipio, noResults }
     = useMapFilters(() => _map, filtersGetter, {
-        cachedMunicipios, cachedVias, cachedLocalizaciones,
+        cachedMunicipios, cachedVias, cachedLocalizaciones, cachedAreaIntervenidas, cachedPrediosIntervenidos,
         center: CENTER, zoom: ZOOM,
         refreshVisibleCallouts,
       })

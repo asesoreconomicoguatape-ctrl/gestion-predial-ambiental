@@ -42,7 +42,7 @@ function _getMunicipiosPorSubregion(geoMunicipios, geoVias) {
   return map
 }
 
-export function useMapLayers(getMap, { onOptionsLoaded, onStatsLoaded } = {}, { buildCallouts, updateCalloutPositions } = {}) {
+export function useMapLayers(getMap, { onOptionsLoaded, onCatalogLoaded, onStatsLoaded } = {}, { buildCallouts, updateCalloutPositions } = {}) {
   const store          = useMapStore()
   const loading          = ref(true)
   const loadError        = ref(false)
@@ -54,63 +54,86 @@ export function useMapLayers(getMap, { onOptionsLoaded, onStatsLoaded } = {}, { 
   const cachedMunicipios = ref(null)
   const cachedVias       = ref(null)
   const cachedLocalizaciones = ref(null)
+  const cachedAreaIntervenidas = ref(null)
+  const cachedPrediosIntervenidos = ref(null)
   const fromCache        = ref(false)
 
   let destroyed = false
 
   onUnmounted(() => { destroyed = true })
 
+  function _buildProjectCatalog(geoLoc, geoAreaIntervenidas, jsonDatosPredial) {
+    const norm = s => (s || '').toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, ' ')
+      .replace(/\s+/g, ' ').trim()
 
-
-  function _extractFilterOptions(geoMunicipios, geoVias, geoLoc, geoAreaIntervenidas) {
-    const proyectos = geoLoc
-      ? [...new Set(geoLoc.features.map(f => f.properties.NOMBRE_PROYECTO).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'))
-      : []
-    
-    const puentes = []
-    const paps = []
-    
-    for (const name of proyectos) {
-      const lower = name.toLowerCase()
-      if (lower.startsWith('puente') || lower.includes('casita')) {
-        puentes.push(name)
-      } else {
-        paps.push(name)
+    const proyToFuente = {}
+    if (Array.isArray(jsonDatosPredial)) {
+      for (const d of jsonDatosPredial) {
+        const p = d.Proyecto || d.proyecto || d.NOMBRE_PROYECTO
+        const f = d.Fuente_Financiacion || d['Fuente de financiación'] || d['Fuente de Financiación'] || d.FUENTE
+        if (p && f) proyToFuente[norm(p)] = String(f).trim()
+      }
+    }
+    if (geoAreaIntervenidas?.features) {
+      for (const feat of geoAreaIntervenidas.features) {
+        const p = feat.properties.Proyecto || feat.properties.proyecto
+        const f = feat.properties.Fuente_Financiacion || feat.properties.fuente
+        if (p && f && !proyToFuente[norm(p)]) proyToFuente[norm(p)] = String(f).trim()
       }
     }
 
-    const fuentesSet = new Set()
-    if (geoLoc) {
+    function resolveFuente(projectName) {
+      const np = norm(projectName)
+      if (proyToFuente[np]) return proyToFuente[np]
+      if (np.includes('granada') || np.includes('majagual') || np.includes('recursos propios')) {
+        return 'Recursos Propios'
+      }
+      const words = np.split(' ').filter(w => w.length > 3 && !['puente', 'para', 'san', 'los', 'las', 'del'].includes(w))
+      for (const [key, f] of Object.entries(proyToFuente)) {
+        if (words.some(w => key.includes(w))) return f
+      }
+      return 'Regalías'
+    }
+
+    const projectsSet = new Set()
+    if (geoLoc?.features) {
       for (const f of geoLoc.features) {
-         const p = f.properties
-         const fuente = p.Fuente_Financiacion || p.FUENTE_FINANCIACION || p.FUENTE_FIN || p.FUENTE || p.fuente
-         if (fuente && typeof fuente === 'string') fuentesSet.add(fuente)
+        const name = f.properties.NOMBRE_PROYECTO
+        if (name) projectsSet.add(name)
       }
     }
-    if (geoVias) {
-      for (const f of geoVias.features) {
-         const p = f.properties
-         const fuente = p.Fuente_Financiacion || p.FUENTE_FINANCIACION || p.FUENTE_FIN || p.FUENTE || p.fuente
-         if (fuente && typeof fuente === 'string') fuentesSet.add(fuente)
-      }
-    }
-    if (geoAreaIntervenidas) {
+    if (geoAreaIntervenidas?.features) {
       for (const f of geoAreaIntervenidas.features) {
-         const p = f.properties
-         const fuente = p.Fuente_Financiacion || p.FUENTE_FINANCIACION || p.FUENTE_FIN || p.FUENTE || p.fuente
-         if (fuente && typeof fuente === 'string') fuentesSet.add(fuente)
+        const name = f.properties.Proyecto || f.properties.proyecto
+        if (name) projectsSet.add(name)
       }
     }
-    const fuentes = [...fuentesSet].sort((a, b) => a.localeCompare(b, 'es'))
 
-    onOptionsLoaded?.({
-      fuentes: ['Todas las fuentes', ...fuentes],
-      puentes: ['Todos los puentes', ...puentes],
-      paps: ['Todos los PAP y otros', ...paps],
-    })
+    const catalog = []
+    for (const name of projectsSet) {
+      const lower = name.toLowerCase()
+      const type = (lower.startsWith('puente') || lower.includes('casita')) ? 'puente' : 'pap'
+      const fuente = resolveFuente(name)
+      catalog.push({ name, fuente, type })
+    }
+
+    return { catalog, resolveFuente }
   }
 
-  function _calculateViasStats(geoVias, geoLoc, geoAreaIntervenidas) {
+  function _extractFilterOptions(geoMunicipios, geoVias, geoLoc, geoAreaIntervenidas, jsonDatosPredial) {
+    const { catalog } = _buildProjectCatalog(geoLoc, geoAreaIntervenidas, jsonDatosPredial)
+
+    const fuentes = ['Todas las fuentes', ...new Set(catalog.map(c => c.fuente).filter(Boolean))].sort((a, b) => a === 'Todas las fuentes' ? -1 : b === 'Todas las fuentes' ? 1 : a.localeCompare(b, 'es'))
+    const puentes = ['Todos los puentes', ...new Set(catalog.filter(c => c.type === 'puente').map(c => c.name))].sort((a, b) => a === 'Todos los puentes' ? -1 : b === 'Todos los puentes' ? 1 : a.localeCompare(b, 'es'))
+    const paps    = ['Todos los PAP y otros', ...new Set(catalog.filter(c => c.type === 'pap').map(c => c.name))].sort((a, b) => a === 'Todos los PAP y otros' ? -1 : b === 'Todos los PAP y otros' ? 1 : a.localeCompare(b, 'es'))
+
+    onCatalogLoaded?.(catalog)
+    onOptionsLoaded?.({ fuentes, puentes, paps })
+  }
+
+  function _calculateViasStats(geoVias, geoLoc, geoAreaIntervenidas, resolveFuente) {
     const viasDetalle = []
     let longitudTotal = 0
     const kmPorSubregion = {}
@@ -119,12 +142,13 @@ export function useMapLayers(getMap, { onOptionsLoaded, onStatsLoaded } = {}, { 
       for (const f of geoLoc.features) {
         const p = f.properties
         const nombre = p.NOMBRE_PROYECTO ?? 'Sin nombre'
-        const sub = canonicalSub(p.SUBREGION) ?? 'Sin subregiÃ³n'
+        const sub = canonicalSub(p.SUBREGION) ?? 'Sin subregión'
+        const fuente = p.FUENTE_FINANCIACION || p.FUENTE_FIN || p.FUENTE || p.fuente || resolveFuente?.(nombre) || ''
 
         viasDetalle.push({
           nombre: nombre,
           subregion: sub,
-          fuente: p.FUENTE_FINANCIACION || p.FUENTE_FIN || p.FUENTE || p.fuente || '',
+          fuente: fuente,
           municipio: '',
           proyecto: nombre,
           km: 0,
@@ -147,11 +171,12 @@ export function useMapLayers(getMap, { onOptionsLoaded, onStatsLoaded } = {}, { 
         const p = f.properties
         const nombre = p.Proyecto || p.proyecto || 'Área Intervenida'
         const sub = 'Sin subregión'
+        const fuente = p.Fuente_Financiacion || p.FUENTE_FINANCIACION || p.FUENTE_FIN || p.FUENTE || p.fuente || resolveFuente?.(nombre) || ''
 
         viasDetalle.push({
           nombre: nombre,
           subregion: sub,
-          fuente: p.Fuente_Financiacion || p.FUENTE_FINANCIACION || p.FUENTE_FIN || p.FUENTE || p.fuente || '',
+          fuente: fuente,
           municipio: p.Municipio || p.municipio || '',
           proyecto: nombre,
           km: 0,
@@ -827,6 +852,8 @@ export function useMapLayers(getMap, { onOptionsLoaded, onStatsLoaded } = {}, { 
     cachedMunicipios.value = munResult?.data ?? null
     cachedVias.value       = viaResult?.data ?? null
     cachedLocalizaciones.value = locResult?.data ?? null
+    cachedAreaIntervenidas.value = areaIntervenidasResult?.data ?? null
+    cachedPrediosIntervenidos.value = prediosIntervenidosResult?.data ?? null
     fromCache.value        = !!(munResult?.fromCache || viaResult?.fromCache)
 
     const geoMunicipios = cachedMunicipios.value
@@ -843,7 +870,7 @@ export function useMapLayers(getMap, { onOptionsLoaded, onStatsLoaded } = {}, { 
     const geoPrediosIntervenidos = prediosIntervenidosResult?.data ?? null
 
     if (resMunicipios.status === 'rejected') console.warn('[SIMEVA] Municipios:', resMunicipios.reason)
-    if (resVias.status       === 'rejected') console.warn('[SIMEVA] VÃ­as:', resVias.reason)
+    if (resVias.status       === 'rejected') console.warn('[SIMEVA] Vías:', resVias.reason)
 
     if (!geoMunicipios && !geoVias && !geoLoc && !geoAfectados && !geoPermiso) {
       loadError.value = true
@@ -851,12 +878,12 @@ export function useMapLayers(getMap, { onOptionsLoaded, onStatsLoaded } = {}, { 
       return
     }
 
-    // Normaliza texto para comparar sin acentos ni mayÃºsculas
+    // Normaliza texto para comparar sin acentos ni mayúsculas
+    const { resolveFuente } = _buildProjectCatalog(geoLoc, geoAreaIntervenidas, jsonDatosPredial)
+    _extractFilterOptions(geoMunicipios, geoVias, geoLoc, geoAreaIntervenidas, jsonDatosPredial)
 
-    _extractFilterOptions(geoMunicipios, geoVias, geoLoc, geoAreaIntervenidas)
-
-    // â”€â”€ EstadÃ­sticas desde propiedades directas del GeoJSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    _calculateViasStats(geoVias, geoLoc, geoAreaIntervenidas)
+    // ── Estadísticas desde propiedades directas del GeoJSON ──────────────────
+    _calculateViasStats(geoVias, geoLoc, geoAreaIntervenidas, resolveFuente)
 
     if (destroyed) return
 
@@ -1465,7 +1492,7 @@ export function useMapLayers(getMap, { onOptionsLoaded, onStatsLoaded } = {}, { 
     loading.value = false
   }
 
-  return { loading, loadError, fromCache, hoverLabel, viaHoverLabel, selectedVia, selectedMpio, cachedMunicipios, cachedVias, cachedLocalizaciones, loadSimeva }
+  return { loading, loadError, fromCache, hoverLabel, viaHoverLabel, selectedVia, selectedMpio, cachedMunicipios, cachedVias, cachedLocalizaciones, cachedAreaIntervenidas, cachedPrediosIntervenidos, loadSimeva }
 }
 
 

@@ -9,10 +9,46 @@ export const useMapStore = defineStore('map', () => {
     pap:    'Todos los PAP y otros',
   })
 
-  const filterOptions = ref({
+  // Catálogo maestro de proyectos cargados con su fuente y tipo
+  // Forma: [ { name: string, fuente: string, type: 'puente' | 'pap' }, ... ]
+  const projectCatalog = ref([])
+
+  // Lista estática fallback de opciones si aún no se ha cargado el catálogo
+  const fallbackOptions = ref({
     fuentes: ['Todas las fuentes'],
     puentes: ['Todos los puentes'],
     paps:    ['Todos los PAP y otros'],
+  })
+
+  // Opciones calculadas dinámicamente de forma cascada según los filtros activos
+  const filterOptions = computed(() => {
+    if (!projectCatalog.value || projectCatalog.value.length === 0) {
+      return fallbackOptions.value
+    }
+
+    // 1. Fuentes disponibles
+    const rawFuentes = [...new Set(projectCatalog.value.map(p => p.fuente).filter(Boolean))]
+    rawFuentes.sort((a, b) => a.localeCompare(b, 'es'))
+    const fuentes = ['Todas las fuentes', ...rawFuentes]
+
+    // 2. Filtrar catálogo según la fuente seleccionada
+    const currentFuente = activeFilters.value.fuente
+    const isFuenteFiltered = currentFuente && currentFuente !== 'Todas las fuentes'
+
+    const availableProjects = isFuenteFiltered
+      ? projectCatalog.value.filter(p => norm(p.fuente) === norm(currentFuente))
+      : projectCatalog.value
+
+    // 3. Puentes y PAPs disponibles para la fuente actual
+    const rawPuentes = [...new Set(availableProjects.filter(p => p.type === 'puente').map(p => p.name))]
+    rawPuentes.sort((a, b) => a.localeCompare(b, 'es'))
+    const puentes = ['Todos los puentes', ...rawPuentes]
+
+    const rawPaps = [...new Set(availableProjects.filter(p => p.type === 'pap').map(p => p.name))]
+    rawPaps.sort((a, b) => a.localeCompare(b, 'es'))
+    const paps = ['Todos los PAP y otros', ...rawPaps]
+
+    return { fuentes, puentes, paps }
   })
 
   const mapStats = ref({
@@ -57,7 +93,7 @@ export const useMapStore = defineStore('map', () => {
     if (!hasFuente && !hasPuente && !hasPap && !q) return mapStats.value
 
     const vias = mapStats.value.viasDetalle.filter(v => {
-      if (hasFuente && v.fuente !== fuente) return false
+      if (hasFuente && norm(v.fuente) !== norm(fuente)) return false
       if (hasPuente && v.proyecto !== puente) return false
       if (hasPap    && v.proyecto !== pap) return false
       if (q && !norm(v.nombre).includes(q)
@@ -79,23 +115,67 @@ export const useMapStore = defineStore('map', () => {
   })
 
   function setFilter(filters) {
-    // Exclusividad: si cambia puente y es válido, reiniciar pap. Y viceversa.
-    if (filters.puente !== activeFilters.value.puente && filters.puente !== 'Todos los puentes') {
-      filters.pap = 'Todos los PAP y otros'
-    } else if (filters.pap !== activeFilters.value.pap && filters.pap !== 'Todos los PAP y otros') {
-      filters.puente = 'Todos los puentes'
+    const next = { ...filters }
+    const prev = activeFilters.value
+
+    // 1. Si cambió la fuente seleccionada
+    if (next.fuente !== prev.fuente) {
+      if (next.fuente && next.fuente !== 'Todas las fuentes') {
+        // Si el puente seleccionado previamente no pertenece a esta nueva fuente, reiniciar
+        const matchingPuente = projectCatalog.value.find(
+          p => p.type === 'puente' && p.name === next.puente && norm(p.fuente) === norm(next.fuente)
+        )
+        if (!matchingPuente) {
+          next.puente = 'Todos los puentes'
+        }
+
+        // Si el pap seleccionado previamente no pertenece a esta nueva fuente, reiniciar
+        const matchingPap = projectCatalog.value.find(
+          p => p.type === 'pap' && p.name === next.pap && norm(p.fuente) === norm(next.fuente)
+        )
+        if (!matchingPap) {
+          next.pap = 'Todos los PAP y otros'
+        }
+      }
     }
-    
-    // Si se limpia pap mientras puente estaba limpio, o viceversa, asegurar que quede consistente.
-    activeFilters.value = filters
+
+    // 2. Si el usuario seleccionó un puente específico
+    if (next.puente !== prev.puente && next.puente && next.puente !== 'Todos los puentes') {
+      next.pap = 'Todos los PAP y otros' // Exclusividad entre puente y pap
+      const found = projectCatalog.value.find(p => p.type === 'puente' && p.name === next.puente)
+      if (found && found.fuente) {
+        next.fuente = found.fuente
+      }
+    }
+
+    // 3. Si el usuario seleccionó un PAP específico
+    if (next.pap !== prev.pap && next.pap && next.pap !== 'Todos los PAP y otros') {
+      next.puente = 'Todos los puentes' // Exclusividad entre puente y pap
+      const found = projectCatalog.value.find(p => p.type === 'pap' && p.name === next.pap)
+      if (found && found.fuente) {
+        next.fuente = found.fuente
+      }
+    }
+
+    activeFilters.value = next
   }
 
-  function setFilterOptions(options) { filterOptions.value = options }
-  function setMapStats(stats)        { mapStats.value = stats }
+  function setProjectCatalog(catalog) {
+    projectCatalog.value = catalog
+  }
+
+  function setFilterOptions(options) {
+    fallbackOptions.value = options
+  }
+
+  function setMapStats(stats) {
+    mapStats.value = stats
+  }
 
   return {
     activeFilters,
     filterOptions,
+    projectCatalog,
     mapStats,
     filteredStats,
     mapLoading,
@@ -103,6 +183,7 @@ export const useMapStore = defineStore('map', () => {
     toggleLayer,
     setFilter,
     setFilterOptions,
+    setProjectCatalog,
     setMapStats,
     setMapLoading,
   }
